@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAccount, usePublicClient } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { BrowserProvider, Contract, formatEther, parseEther } from 'ethers';
+import { Contract, formatEther, parseEther } from 'ethers';
 import { useEthersSigner } from '../hooks/useEthersSigner';
 import { useZamaInstance } from '../hooks/useZamaInstance';
 import { CONTRACT_ABI, CONTRACT_ADDRESS, TOKENS } from '../config/contracts';
@@ -46,13 +46,13 @@ export function SecretInvestApp() {
     const [bal, has, own] = await Promise.all([
       publicClient.readContract({ ...viemContract, functionName: 'getEncryptedBalance', args: [address] }) as Promise<string>,
       publicClient.readContract({ ...viemContract, functionName: 'hasActivePosition', args: [address] }) as Promise<boolean>,
-      publicClient.readContract({ ...viemContract, functionName: 'owner' }) as Promise<`0x${string}`>,
+      publicClient.readContract({ ...viemContract, functionName: 'owner', args: [] }) as Promise<`0x${string}`>,
     ]);
     setEncBalance(bal as any);
     setDecBalance(null);
     setActive(has);
     setOwner(own);
-    const up = await publicClient.readContract({ ...viemContract, functionName: 'UNIT_PRICE_WEI' }) as bigint;
+    const up = await publicClient.readContract({ ...viemContract, functionName: 'UNIT_PRICE_WEI', args: [] }) as bigint;
     setUnitPrice(up);
     if (has) {
       const res = await publicClient.readContract({ ...viemContract, functionName: 'getPosition', args: [address] }) as any[];
@@ -180,6 +180,48 @@ export function SecretInvestApp() {
       alert('Decrypt balance failed: ' + (e?.message || String(e)));
     } finally {
       setBusy('');
+    }
+  }
+
+  async function handleDecrypt() {
+    if (!position || !address || !instance) return;
+    setIsDecrypting(true);
+    try {
+      const directionHandle = (position.direction as unknown as string);
+      const quantityHandle = (position.quantity as unknown as string);
+
+      const handleContractPairs = [
+        { handle: directionHandle, contractAddress: CONTRACT_ADDRESS },
+        { handle: quantityHandle, contractAddress: CONTRACT_ADDRESS },
+      ];
+
+      const keypair = await instance.generateKeypair();
+      const start = Math.floor(Date.now() / 1000);
+      const eip712 = instance.createEIP712(keypair.publicKey, [CONTRACT_ADDRESS], start, 1);
+      const signer = await signerPromise; if (!signer) throw new Error('No signer');
+      const filteredTypes = Object.fromEntries(Object.entries(eip712.types).filter(([k]) => k !== 'EIP712Domain')) as any;
+      // @ts-ignore ethers v6 signTypedData
+      const signature: string = await signer.signTypedData(eip712.domain, filteredTypes, eip712.message);
+
+      const result = await instance.userDecrypt(
+        handleContractPairs as any,
+        keypair.privateKey,
+        keypair.publicKey,
+        signature.replace('0x',''),
+        [CONTRACT_ADDRESS],
+        address,
+        start,
+        1
+      );
+
+      const dir = Number(result[directionHandle] ?? 0);
+      const qty = Number(result[quantityHandle] ?? 0);
+      setDecrypted({ direction: dir, quantity: qty });
+    } catch (e: any) {
+      console.error('Decrypt failed', e);
+      alert('Decrypt failed: ' + (e?.message || String(e)));
+    } finally {
+      setIsDecrypting(false);
     }
   }
 
@@ -650,46 +692,4 @@ export function SecretInvestApp() {
       </div>
     </div>
   );
-  }
-
-  async function handleDecrypt() {
-    if (!position || !address || !instance) return;
-    setIsDecrypting(true);
-    try {
-      const directionHandle = (position.direction as unknown as string);
-      const quantityHandle = (position.quantity as unknown as string);
-
-      const handleContractPairs = [
-        { handle: directionHandle, contractAddress: CONTRACT_ADDRESS },
-        { handle: quantityHandle, contractAddress: CONTRACT_ADDRESS },
-      ];
-
-      const keypair = await instance.generateKeypair();
-      const start = Math.floor(Date.now() / 1000);
-      const eip712 = instance.createEIP712(keypair.publicKey, [CONTRACT_ADDRESS], start, 1);
-      const signer = await signerPromise; if (!signer) throw new Error('No signer');
-      const filteredTypes = Object.fromEntries(Object.entries(eip712.types).filter(([k]) => k !== 'EIP712Domain')) as any;
-      // @ts-ignore ethers v6 signTypedData
-      const signature: string = await signer.signTypedData(eip712.domain, filteredTypes, eip712.message);
-
-      const result = await instance.userDecrypt(
-        handleContractPairs as any,
-        keypair.privateKey,
-        keypair.publicKey,
-        signature.replace('0x',''),
-        [CONTRACT_ADDRESS],
-        address,
-        start,
-        1
-      );
-
-      const dir = Number(result[directionHandle] ?? 0);
-      const qty = Number(result[quantityHandle] ?? 0);
-      setDecrypted({ direction: dir, quantity: qty });
-    } catch (e: any) {
-      console.error('Decrypt failed', e);
-      alert('Decrypt failed: ' + (e?.message || String(e)));
-    } finally {
-      setIsDecrypting(false);
-    }
-  }
+}
