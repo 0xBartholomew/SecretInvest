@@ -4,7 +4,7 @@ import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { BrowserProvider, Contract, formatEther, parseEther } from 'ethers';
 import { useEthersSigner } from '../hooks/useEthersSigner';
 import { useZamaInstance } from '../hooks/useZamaInstance';
-import { CONTRACT_ABI, CONTRACT_ADDRESS } from '../config/contracts';
+import { CONTRACT_ABI, CONTRACT_ADDRESS, TOKENS } from '../config/contracts';
 
 type Position = {
   token: string;
@@ -22,7 +22,7 @@ export function SecretInvestApp() {
   const { instance, isLoading: zamaLoading } = useZamaInstance();
 
   const [balance, setBalance] = useState<bigint>(0n);
-  const [token, setToken] = useState<string>('0x0000000000000000000000000000000000000001');
+  const [token, setToken] = useState<string>(TOKENS[0]);
   const [tokenPrice, setTokenPrice] = useState<bigint>(0n);
   const [direction, setDirection] = useState<1 | 2>(1);
   const [quantity, setQuantity] = useState<number>(1);
@@ -71,6 +71,7 @@ export function SecretInvestApp() {
   }
 
   useEffect(() => { refresh(); }, [address, publicClient]);
+  useEffect(() => { refresh(); }, [token]);
 
   async function getContractWithSigner(): Promise<Contract | null> {
     const signer = await signerPromise;
@@ -164,8 +165,15 @@ export function SecretInvestApp() {
             <div style={{ display: 'grid', gap: 8 }}>
               <label>
                 Token Address
-                <input style={{ width: '100%' }} value={token} onChange={(e) => setToken(e.target.value)} />
+                <select style={{ width: '100%' }} value={token} onChange={(e) => setToken(e.target.value)}>
+                  {TOKENS.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
               </label>
+              <div>
+                <small>Current price (wei): {tokenPrice.toString()}</small>
+              </div>
               {owner && address?.toLowerCase() === owner.toLowerCase() && (
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <input placeholder="Set token price (wei)" value={newTokenPrice} onChange={(e) => setNewTokenPrice(e.target.value)} />
