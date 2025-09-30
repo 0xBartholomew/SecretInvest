@@ -1,6 +1,7 @@
 import { expect } from "chai";
 import { ethers, fhevm } from "hardhat";
-import { ContractTransactionResponse, parseEther, formatEther } from "ethers";
+import { parseEther } from "ethers";
+import { FhevmType } from "@fhevm/hardhat-plugin";
 
 describe("SecretInvest", function () {
   const UNIT_PRICE = ethers.parseEther("0.001");
@@ -27,30 +28,48 @@ describe("SecretInvest", function () {
     // alice deposit 0.1 ETH
     await expect(contract.connect(alice).deposit({ value: parseEther("0.1") }))
       .to.emit(contract, "Deposited");
-    expect(await contract.balances(alice.address)).to.eq(parseEther("0.1"));
+    const encBalAfterDeposit = await contract.getEncryptedBalance(alice.address);
+    const decBalAfterDeposit = await fhevm.userDecryptEuint(
+      FhevmType.euint64,
+      encBalAfterDeposit,
+      addr,
+      alice,
+    );
+    expect(decBalAfterDeposit).to.eq(parseEther("0.1"));
 
     // open position: dir=1(long), qty=3
+    const stake = UNIT_PRICE * 3n; // 0.003 ETH
     const enc = await fhevm
       .createEncryptedInput(addr, alice.address)
       .add32(1)
       .add32(3)
+      .add64(Number(stake))
       .encrypt();
 
     await expect(
-      contract.connect(alice).openPosition(TOKEN, enc.handles[0], enc.handles[1], enc.inputProof)
+      contract.connect(alice).openPosition(TOKEN, enc.handles[0], enc.handles[1], enc.handles[2], enc.inputProof)
     ).to.emit(contract, "PositionOpened");
 
     expect(await contract.hasActivePosition(alice.address)).to.eq(true);
 
     // close position with clear params; due to randomness, assert outcomes set membership
-    const stake = UNIT_PRICE * 3n; // 0.003 ETH
-    const balBefore = await contract.balances(alice.address);
+    const balBefore = await fhevm.userDecryptEuint(
+      FhevmType.euint64,
+      await contract.getEncryptedBalance(alice.address),
+      addr,
+      alice,
+    );
     const tx = await contract.connect(alice).closePosition(3, 1);
     await tx.wait();
 
-    const balAfter = await contract.balances(alice.address);
-    // Either lost (−stake) or won (+stake)
-    expect([balBefore - stake, balBefore + stake]).to.include(balAfter);
+    const balAfter = await fhevm.userDecryptEuint(
+      FhevmType.euint64,
+      await contract.getEncryptedBalance(alice.address),
+      addr,
+      alice,
+    );
+    // Since stake was deducted at open: either unchanged (lose) or +2*stake (win)
+    expect([balBefore, balBefore + 2n * stake]).to.include(balAfter);
 
     expect(await contract.hasActivePosition(alice.address)).to.eq(false);
 
@@ -61,4 +80,3 @@ describe("SecretInvest", function () {
     }
   });
 });
-
