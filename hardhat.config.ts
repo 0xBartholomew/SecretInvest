@@ -7,36 +7,15 @@ import "hardhat-deploy";
 import "hardhat-gas-reporter";
 import type { HardhatUserConfig } from "hardhat/config";
 import "solidity-coverage";
-import fs from "fs";
+import * as dotenv from "dotenv";
+dotenv.config();
 
 import "./tasks/accounts";
 import "./tasks/FHECounter";
 import "./tasks/SecretInvest";
 
-// lightweight .env loader (no external deps)
-function loadEnv(path = ".env") {
-  try {
-    if (!fs.existsSync(path)) return;
-    const txt = fs.readFileSync(path, "utf8");
-    txt.split(/\r?\n/).forEach((raw) => {
-      const line = raw.trim();
-      if (!line || line.startsWith("#")) return;
-      const cleaned = line.startsWith("export ") ? line.slice(7) : line;
-      const eq = cleaned.indexOf("=");
-      if (eq === -1) return;
-      const key = cleaned.slice(0, eq).trim();
-      let val = cleaned.slice(eq + 1).trim();
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      if (!(key in process.env)) process.env[key] = val;
-    });
-  } catch {}
-}
-loadEnv();
-
 const MNEMONIC: string = process.env.MNEMONIC ?? "test test test test test test test test test test test junk";
-const PRIVATE_KEY: string = process.env.PRIVATE_KEY ?? "";
+const PRIVATE_KEY: string = (process.env.PRIVATE_KEY ?? "").replace(/^0x/, "");
 const INFURA_API_KEY: string = process.env.INFURA_API_KEY ?? "";
 
 const config: HardhatUserConfig = {
