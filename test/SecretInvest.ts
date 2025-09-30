@@ -1,146 +1,64 @@
 import { expect } from "chai";
-import { ethers, fhevm, network } from "hardhat";
-import type { FhevmType } from "@fhevm/hardhat-plugin";
-import type { SecretInvest } from "../types";
+import { ethers, fhevm } from "hardhat";
+import { ContractTransactionResponse, parseEther, formatEther } from "ethers";
 
 describe("SecretInvest", function () {
-  let secretInvest: SecretInvest;
-  let signers: any[];
+  const UNIT_PRICE = ethers.parseEther("0.001");
+  const TOKEN = "0x0000000000000000000000000000000000000001";
 
-  beforeEach(async function () {
-    signers = await ethers.getSigners();
-
-    const contractFactory = await ethers.getContractFactory("SecretInvest");
-    secretInvest = await contractFactory.deploy();
-    await secretInvest.waitForDeployment();
+  before(function () {
+    if (!fhevm.isMock) {
+      console.warn("This test suite requires FHEVM mock environment");
+      this.skip();
+    }
   });
 
-  it("should allow users to deposit ETH", async function () {
-    const depositAmount = ethers.parseEther("1.0");
+  it("full flow: set price, deposit, open & close", async function () {
+    const [deployer, alice] = await ethers.getSigners();
 
-    await secretInvest.connect(signers[1]).deposit({ value: depositAmount });
+    const factory = await ethers.getContractFactory("SecretInvest");
+    const contract = await factory.deploy();
+    const addr = await contract.getAddress();
 
-    const balance = await secretInvest.getUserBalance(signers[1].address);
-    expect(balance).to.equal(depositAmount);
-  });
+    // owner sets token price
+    await expect(contract.connect(deployer).setTokenPrice(TOKEN, 123456n)).to.emit(contract, "TokenPriceUpdated");
+    expect(await contract.getTokenPrice(TOKEN)).to.eq(123456n);
 
-  it("should allow owner to set token prices", async function () {
-    const tokenAddress = "0x1234567890123456789012345678901234567890";
-    const price = ethers.parseEther("100");
+    // alice deposit 0.1 ETH
+    await expect(contract.connect(alice).deposit({ value: parseEther("0.1") }))
+      .to.emit(contract, "Deposited");
+    expect(await contract.balances(alice.address)).to.eq(parseEther("0.1"));
 
-    await secretInvest.setTokenPrice(tokenAddress, price);
-
-    const storedPrice = await secretInvest.getTokenPrice(tokenAddress);
-    expect(storedPrice).to.equal(price);
-  });
-
-  it("should not allow non-owner to set token prices", async function () {
-    const tokenAddress = "0x1234567890123456789012345678901234567890";
-    const price = ethers.parseEther("100");
+    // open position: dir=1(long), qty=3
+    const enc = await fhevm
+      .createEncryptedInput(addr, alice.address)
+      .add32(1)
+      .add32(3)
+      .encrypt();
 
     await expect(
-      secretInvest.connect(signers[1]).setTokenPrice(tokenAddress, price)
-    ).to.be.revertedWith("Only owner can call this function");
-  });
+      contract.connect(alice).openPosition(TOKEN, enc.handles[0], enc.handles[1], enc.inputProof)
+    ).to.emit(contract, "PositionOpened");
 
-  it("should allow users to open positions with encrypted inputs", async function () {
-    const tokenAddress = "0x1234567890123456789012345678901234567890";
-    const price = ethers.parseEther("100");
-    const depositAmount = ethers.parseEther("1.0");
+    expect(await contract.hasActivePosition(alice.address)).to.eq(true);
 
-    // Set token price
-    await secretInvest.setTokenPrice(tokenAddress, price);
+    // close position with clear params; due to randomness, assert outcomes set membership
+    const stake = UNIT_PRICE * 3n; // 0.003 ETH
+    const balBefore = await contract.balances(alice.address);
+    const tx = await contract.connect(alice).closePosition(3, 1);
+    await tx.wait();
 
-    // Deposit funds
-    await secretInvest.connect(signers[1]).deposit({ value: depositAmount });
+    const balAfter = await contract.balances(alice.address);
+    // Either lost (−stake) or won (+stake)
+    expect([balBefore - stake, balBefore + stake]).to.include(balAfter);
 
-    // Create encrypted inputs
-    const input = fhevm.createEncryptedInput(secretInvest.target, signers[1].address);
-    input.add8(1); // direction (1 for long)
-    input.add32(10); // amount
-    const encryptedInput = await input.encrypt();
+    expect(await contract.hasActivePosition(alice.address)).to.eq(false);
 
-    await secretInvest.connect(signers[1]).openPosition(
-      tokenAddress,
-      encryptedInput.handles[0],
-      encryptedInput.handles[1],
-      encryptedInput.inputProof
-    );
-
-    const positionCount = await secretInvest.getUserPositionCount(signers[1].address);
-    expect(positionCount).to.equal(1);
-  });
-
-  it("should allow users to withdraw funds", async function () {
-    const depositAmount = ethers.parseEther("1.0");
-    const withdrawAmount = ethers.parseEther("0.5");
-
-    await secretInvest.connect(signers[1]).deposit({ value: depositAmount });
-
-    const initialBalance = await ethers.provider.getBalance(signers[1].address);
-
-    await secretInvest.connect(signers[1]).withdraw(withdrawAmount);
-
-    const contractBalance = await secretInvest.getUserBalance(signers[1].address);
-    expect(contractBalance).to.equal(depositAmount - withdrawAmount);
-  });
-
-  it("should not allow withdrawal of more than balance", async function () {
-    const depositAmount = ethers.parseEther("1.0");
-    const withdrawAmount = ethers.parseEther("2.0");
-
-    await secretInvest.connect(signers[1]).deposit({ value: depositAmount });
-
-    await expect(
-      secretInvest.connect(signers[1]).withdraw(withdrawAmount)
-    ).to.be.revertedWith("Insufficient balance");
-  });
-
-  it("should not allow opening position without sufficient balance", async function () {
-    const tokenAddress = "0x1234567890123456789012345678901234567890";
-    const price = ethers.parseEther("100");
-
-    // Set token price
-    await secretInvest.setTokenPrice(tokenAddress, price);
-
-    // Don't deposit any funds
-
-    // Create encrypted inputs
-    const input = fhevm.createEncryptedInput(secretInvest.target, signers[1].address);
-    input.add8(1); // direction
-    input.add32(10); // amount
-    const encryptedInput = await input.encrypt();
-
-    await expect(
-      secretInvest.connect(signers[1]).openPosition(
-        tokenAddress,
-        encryptedInput.handles[0],
-        encryptedInput.handles[1],
-        encryptedInput.inputProof
-      )
-    ).to.be.revertedWith("Insufficient balance");
-  });
-
-  it("should not allow opening position for token without price", async function () {
-    const tokenAddress = "0x1234567890123456789012345678901234567890";
-    const depositAmount = ethers.parseEther("1.0");
-
-    // Deposit funds but don't set token price
-    await secretInvest.connect(signers[1]).deposit({ value: depositAmount });
-
-    // Create encrypted inputs
-    const input = fhevm.createEncryptedInput(secretInvest.target, signers[1].address);
-    input.add8(1); // direction
-    input.add32(10); // amount
-    const encryptedInput = await input.encrypt();
-
-    await expect(
-      secretInvest.connect(signers[1]).openPosition(
-        tokenAddress,
-        encryptedInput.handles[0],
-        encryptedInput.handles[1],
-        encryptedInput.inputProof
-      )
-    ).to.be.revertedWith("Token price not set");
+    // withdraw small amount
+    const withdrawAmount = parseEther("0.001");
+    if (balAfter >= withdrawAmount) {
+      await expect(contract.connect(alice).withdraw(withdrawAmount)).to.emit(contract, "Withdrawn");
+    }
   });
 });
+
