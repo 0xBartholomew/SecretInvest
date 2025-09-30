@@ -21,7 +21,8 @@ export function SecretInvestApp() {
   const signerPromise = useEthersSigner();
   const { instance, isLoading: zamaLoading } = useZamaInstance();
 
-  const [balance, setBalance] = useState<bigint>(0n);
+  const [encBalance, setEncBalance] = useState<string>('0x');
+  const [decBalance, setDecBalance] = useState<bigint | null>(null);
   const [token, setToken] = useState<string>(TOKENS[0]);
   const [tokenPrice, setTokenPrice] = useState<bigint>(0n);
   const [direction, setDirection] = useState<1 | 2>(1);
@@ -32,6 +33,8 @@ export function SecretInvestApp() {
   const [busy, setBusy] = useState<string>('');
   const [owner, setOwner] = useState<`0x${string}` | null>(null);
   const [newTokenPrice, setNewTokenPrice] = useState<string>('0');
+  const [isDecrypting, setIsDecrypting] = useState(false);
+  const [decrypted, setDecrypted] = useState<{ direction?: number; quantity?: number }>({});
 
   const viemContract = useMemo(() => ({
     address: CONTRACT_ADDRESS as `0x${string}`,
@@ -41,11 +44,12 @@ export function SecretInvestApp() {
   async function refresh() {
     if (!publicClient || !address) return;
     const [bal, has, own] = await Promise.all([
-      publicClient.readContract({ ...viemContract, functionName: 'balances', args: [address] }) as Promise<bigint>,
+      publicClient.readContract({ ...viemContract, functionName: 'getEncryptedBalance', args: [address] }) as Promise<string>,
       publicClient.readContract({ ...viemContract, functionName: 'hasActivePosition', args: [address] }) as Promise<boolean>,
       publicClient.readContract({ ...viemContract, functionName: 'owner' }) as Promise<`0x${string}`>,
     ]);
-    setBalance(bal);
+    setEncBalance(bal as any);
+    setDecBalance(null);
     setActive(has);
     setOwner(own);
     const up = await publicClient.readContract({ ...viemContract, functionName: 'UNIT_PRICE_WEI' }) as bigint;
@@ -106,14 +110,19 @@ export function SecretInvestApp() {
     if (!instance) throw new Error('Encryption not ready');
     setBusy('Opening position...');
     try {
+      const stake = unitPrice * BigInt(quantity);
+      if (stake > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error('Stake too large to encrypt as 64-bit safely');
+      }
       const enc = await instance
         .createEncryptedInput(CONTRACT_ADDRESS, address)
         .add32(direction)
         .add32(quantity)
+        .add64(Number(stake))
         .encrypt();
 
       const c = await getContractWithSigner(); if (!c) throw new Error('No signer');
-      const tx = await c.openPosition(token, enc.handles[0], enc.handles[1], enc.inputProof);
+      const tx = await c.openPosition(token, enc.handles[0], enc.handles[1], enc.handles[2], enc.inputProof);
       await tx.wait();
       await refresh();
     } finally { setBusy(''); }
@@ -140,6 +149,34 @@ export function SecretInvestApp() {
     } finally { setBusy(''); }
   }
 
+  async function handleDecryptBalance() {
+    if (!address || !instance) return;
+    try {
+      setBusy('Decrypting balance...');
+      const handle = encBalance as unknown as string;
+      const pairs = [[handle, CONTRACT_ADDRESS]];
+      const keypair = await instance.generateKeypair();
+      const sig = await instance.getUserPublicKeySignature(address, keypair.publicKey);
+      const res = await instance.userDecrypt(
+        pairs,
+        keypair.privateKey,
+        keypair.publicKey,
+        sig.replace('0x',''),
+        [CONTRACT_ADDRESS],
+        address,
+        Math.floor(Date.now() / 1000),
+        1
+      );
+      const v = BigInt(res[handle] || 0);
+      setDecBalance(v);
+    } catch (e: any) {
+      console.error(e);
+      alert('Decrypt balance failed: ' + (e?.message || String(e)));
+    } finally {
+      setBusy('');
+    }
+  }
+
   return (
     <div style={{ maxWidth: 920, margin: '0 auto', padding: '24px' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -153,10 +190,14 @@ export function SecretInvestApp() {
         <>
           <section style={{ background: '#fff', padding: 16, borderRadius: 8, marginBottom: 16, border: '1px solid #eee' }}>
             <h3>Balance</h3>
-            <p>Platform balance: {formatEther(balance)} ETH</p>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <p>Platform balance: Encrypted</p>
+            {decBalance !== null && (
+              <p>Decrypted balance: {formatEther(decBalance)} ETH</p>
+            )}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button onClick={() => handleDeposit('0.005')} disabled={!!busy}>Deposit 0.005 ETH</button>
               <button onClick={() => handleWithdraw('0.005')} disabled={!!busy}>Withdraw 0.005 ETH</button>
+              <button onClick={handleDecryptBalance} disabled={!!busy || !instance}>Decrypt Balance</button>
             </div>
           </section>
 
@@ -173,7 +214,7 @@ export function SecretInvestApp() {
                 </select>
               </label>
               <div>
-                <small>Current price (wei): {tokenPrice.toString()}</small>
+                <small>Token price (owner-set): {tokenPrice.toString()}</small>
               </div>
               {owner && address?.toLowerCase() === owner.toLowerCase() && (
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -211,7 +252,14 @@ export function SecretInvestApp() {
                 <div>Opened at: {new Date(Number(position.openedAt) * 1000).toLocaleString()}</div>
                 <div>Encrypted direction: ***</div>
                 <div>Encrypted quantity: ***</div>
+                {decrypted.direction !== undefined && (
+                  <div>Decrypted direction: {decrypted.direction}</div>
+                )}
+                {decrypted.quantity !== undefined && (
+                  <div>Decrypted quantity: {decrypted.quantity}</div>
+                )}
                 <button onClick={handleClose} disabled={!!busy}>Close Position</button>
+                <button onClick={handleDecrypt} disabled={isDecrypting || !instance}>Decrypt</button>
               </div>
             )}
           </section>
@@ -221,4 +269,45 @@ export function SecretInvestApp() {
       )}
     </div>
   );
-}
+  }
+
+  async function handleDecrypt() {
+    if (!position || !address || !instance) return;
+    setIsDecrypting(true);
+    try {
+      const directionHandle = (position.direction as unknown as string);
+      const quantityHandle = (position.quantity as unknown as string);
+
+      const handleContractPairs = [
+        [directionHandle, CONTRACT_ADDRESS],
+        [quantityHandle, CONTRACT_ADDRESS],
+      ];
+
+      const keypair = await instance.generateKeypair();
+      const signature: string = await instance.getUserPublicKeySignature(address, keypair.publicKey);
+
+      const startTimeStamp = Math.floor(Date.now() / 1000);
+      const durationDays = 1;
+      const contractAddresses = [CONTRACT_ADDRESS];
+
+      const result = await instance.userDecrypt(
+        handleContractPairs,
+        keypair.privateKey,
+        keypair.publicKey,
+        signature.replace('0x',''),
+        contractAddresses,
+        address,
+        startTimeStamp,
+        durationDays
+      );
+
+      const dir = Number(result[directionHandle] ?? 0);
+      const qty = Number(result[quantityHandle] ?? 0);
+      setDecrypted({ direction: dir, quantity: qty });
+    } catch (e: any) {
+      console.error('Decrypt failed', e);
+      alert('Decrypt failed: ' + (e?.message || String(e)));
+    } finally {
+      setIsDecrypting(false);
+    }
+  }

@@ -6,7 +6,7 @@ export const CONTRACT_ABI = [
   { "inputs": [], "stateMutability": "nonpayable", "type": "constructor" },
   { "inputs": [], "name": "UNIT_PRICE_WEI", "outputs": [{"internalType":"uint256","name":"","type":"uint256"}], "stateMutability": "view", "type": "function" },
   { "inputs": [], "name": "owner", "outputs": [{"internalType":"address","name":"","type":"address"}], "stateMutability": "view", "type": "function" },
-  { "inputs": [{"internalType":"address","name":"","type":"address"}], "name": "balances", "outputs": [{"internalType":"uint256","name":"","type":"uint256"}], "stateMutability": "view", "type": "function" },
+  { "inputs": [{"internalType":"address","name":"user","type":"address"}], "name": "getEncryptedBalance", "outputs": [{"internalType":"euint64","name":"","type":"bytes32"}], "stateMutability": "view", "type": "function" },
   { "inputs": [{"internalType":"address","name":"","type":"address"}], "name": "tokenPrice", "outputs": [{"internalType":"uint256","name":"","type":"uint256"}], "stateMutability": "view", "type": "function" },
   { "inputs": [{"internalType":"address","name":"token","type":"address"},{"internalType":"uint256","name":"price","type":"uint256"}], "name": "setTokenPrice", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
   { "inputs": [{"internalType":"address","name":"token","type":"address"}], "name": "getTokenPrice", "outputs": [{"internalType":"uint256","name":"","type":"uint256"}], "stateMutability": "view", "type": "function" },
@@ -25,6 +25,7 @@ export const CONTRACT_ABI = [
       {"internalType":"address","name":"token","type":"address"},
       {"internalType":"externalEuint32","name":"directionHandle","type":"bytes32"},
       {"internalType":"externalEuint32","name":"quantityHandle","type":"bytes32"},
+      {"internalType":"externalEuint64","name":"stakeHandle","type":"bytes32"},
       {"internalType":"bytes","name":"inputProof","type":"bytes"}
     ], "name": "openPosition", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
   { "inputs": [
