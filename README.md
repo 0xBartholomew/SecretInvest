@@ -1,14 +1,14 @@
-# 🔐 SecretInvest
+# 🔐 Secret PerpDex
 
 **A Privacy-Preserving Investment Platform Built on Fully Homomorphic Encryption (FHE)**
 
-SecretInvest is a decentralized investment platform that leverages Zama's FHEVM (Fully Homomorphic Encryption Virtual Machine) to enable users to trade token positions while keeping their trading direction (long/short) and position quantities completely private on-chain. This groundbreaking approach ensures that sensitive trading strategies remain confidential, even from validators and block explorers.
+Secret PerpDex is a decentralized investment platform that leverages Zama's FHEVM (Fully Homomorphic Encryption Virtual Machine) to enable users to trade token positions while keeping their trading direction (long/short) and position quantities completely private on-chain. This groundbreaking approach ensures that sensitive trading strategies remain confidential, even from validators and block explorers.
 
 ---
 
 ## 🌟 Overview
 
-SecretInvest demonstrates the practical application of fully homomorphic encryption in DeFi, allowing users to:
+Secret PerpDex demonstrates the practical application of fully homomorphic encryption in DeFi, allowing users to:
 
 - **Open encrypted trading positions** where direction (long/short) and quantity are fully encrypted on-chain
 - **Maintain complete privacy** of trading strategies from all parties, including miners and validators
