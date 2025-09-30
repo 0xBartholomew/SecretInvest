@@ -154,17 +154,22 @@ export function SecretInvestApp() {
     try {
       setBusy('Decrypting balance...');
       const handle = encBalance as unknown as string;
-      const pairs = [[handle, CONTRACT_ADDRESS]];
+      const pairs = [{ handle, contractAddress: CONTRACT_ADDRESS }];
       const keypair = await instance.generateKeypair();
-      const sig = await instance.getUserPublicKeySignature(address, keypair.publicKey);
+      // build typed data and sign with wallet
+      const start = Math.floor(Date.now() / 1000);
+      const eip712 = instance.createEIP712(keypair.publicKey, [CONTRACT_ADDRESS], start, 1);
+      const signer = await signerPromise; if (!signer) throw new Error('No signer');
+      // @ts-ignore ethers v6 signTypedData
+      const signature: string = await signer.signTypedData(eip712.domain, eip712.types, eip712.message);
       const res = await instance.userDecrypt(
-        pairs,
+        pairs as any,
         keypair.privateKey,
         keypair.publicKey,
-        sig.replace('0x',''),
+        signature.replace('0x',''),
         [CONTRACT_ADDRESS],
         address,
-        Math.floor(Date.now() / 1000),
+        start,
         1
       );
       const v = BigInt(res[handle] || 0);
@@ -279,26 +284,26 @@ export function SecretInvestApp() {
       const quantityHandle = (position.quantity as unknown as string);
 
       const handleContractPairs = [
-        [directionHandle, CONTRACT_ADDRESS],
-        [quantityHandle, CONTRACT_ADDRESS],
+        { handle: directionHandle, contractAddress: CONTRACT_ADDRESS },
+        { handle: quantityHandle, contractAddress: CONTRACT_ADDRESS },
       ];
 
       const keypair = await instance.generateKeypair();
-      const signature: string = await instance.getUserPublicKeySignature(address, keypair.publicKey);
-
-      const startTimeStamp = Math.floor(Date.now() / 1000);
-      const durationDays = 1;
-      const contractAddresses = [CONTRACT_ADDRESS];
+      const start = Math.floor(Date.now() / 1000);
+      const eip712 = instance.createEIP712(keypair.publicKey, [CONTRACT_ADDRESS], start, 1);
+      const signer = await signerPromise; if (!signer) throw new Error('No signer');
+      // @ts-ignore ethers v6 signTypedData
+      const signature: string = await signer.signTypedData(eip712.domain, eip712.types, eip712.message);
 
       const result = await instance.userDecrypt(
-        handleContractPairs,
+        handleContractPairs as any,
         keypair.privateKey,
         keypair.publicKey,
         signature.replace('0x',''),
-        contractAddresses,
+        [CONTRACT_ADDRESS],
         address,
-        startTimeStamp,
-        durationDays
+        start,
+        1
       );
 
       const dir = Number(result[directionHandle] ?? 0);
