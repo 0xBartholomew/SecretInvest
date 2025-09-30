@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {FHE, euint32, externalEuint32} from "@fhevm/solidity/lib/FHE.sol";
+import {FHE, euint32, externalEuint32, euint64, externalEuint64} from "@fhevm/solidity/lib/FHE.sol";
 import {SepoliaConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 
 /// @title SecretInvest
@@ -35,7 +35,7 @@ contract SecretInvest is SepoliaConfig {
 
     // ===== Storage =====
     address public owner;
-    mapping(address => uint256) public balances;
+    mapping(address => euint64) private _balances;
 
     // Per token price configured by owner
     mapping(address => uint256) public tokenPrice; // price in wei (arbitrary units)
@@ -73,16 +73,36 @@ contract SecretInvest is SepoliaConfig {
     }
 
     // ===== User funds =====
+    function getEncryptedBalance(address user) external view returns (euint64) {
+        return _balances[user];
+    }
+
     function deposit() external payable {
         require(msg.value > 0, "No value");
-        balances[msg.sender] += msg.value;
+        require(msg.value <= type(uint64).max, "too big");
+        euint64 encAmount = FHE.asEuint64(uint64(msg.value));
+        euint64 current = _balances[msg.sender];
+        if (!FHE.isInitialized(current)) {
+            current = FHE.asEuint64(0);
+        }
+        euint64 updated = FHE.add(current, encAmount);
+        _balances[msg.sender] = updated;
+        FHE.allowThis(updated);
+        FHE.allow(updated, msg.sender);
         emit Deposited(msg.sender, msg.value);
     }
 
     function withdraw(uint256 amount) external {
         require(amount > 0, "Zero amount");
-        require(balances[msg.sender] >= amount, "Insufficient balance");
-        balances[msg.sender] -= amount;
+        require(amount <= type(uint64).max, "too big");
+        euint64 current = _balances[msg.sender];
+        require(FHE.isInitialized(current), "Insufficient balance");
+        euint64 encAmount = FHE.asEuint64(uint64(amount));
+        euint64 updated = FHE.sub(current, encAmount);
+        _balances[msg.sender] = updated;
+        FHE.allowThis(updated);
+        FHE.allow(updated, msg.sender);
+
         (bool ok, ) = msg.sender.call{value: amount}("");
         require(ok, "Withdraw failed");
         emit Withdrawn(msg.sender, amount);
@@ -113,6 +133,7 @@ contract SecretInvest is SepoliaConfig {
         address token,
         externalEuint32 directionHandle,
         externalEuint32 quantityHandle,
+        externalEuint64 stakeHandle,
         bytes calldata inputProof
     ) external {
         require(!positions[msg.sender].active, "Position exists");
@@ -123,12 +144,25 @@ contract SecretInvest is SepoliaConfig {
         // Verify encrypted inputs
         euint32 encDirection = FHE.fromExternal(directionHandle, inputProof);
         euint32 encQuantity = FHE.fromExternal(quantityHandle, inputProof);
+        euint64 encStake = FHE.fromExternal(stakeHandle, inputProof);
 
         // Grant view permissions: contract + user
         FHE.allowThis(encDirection);
         FHE.allow(encDirection, msg.sender);
         FHE.allowThis(encQuantity);
         FHE.allow(encQuantity, msg.sender);
+        FHE.allowThis(encStake);
+        FHE.allow(encStake, msg.sender);
+
+        // Deduct encrypted stake from encrypted balance
+        euint64 cur = _balances[msg.sender];
+        if (!FHE.isInitialized(cur)) {
+            cur = FHE.asEuint64(0);
+        }
+        euint64 upd = FHE.sub(cur, encStake);
+        _balances[msg.sender] = upd;
+        FHE.allowThis(upd);
+        FHE.allow(upd, msg.sender);
 
         // Compute and lock stake = quantity * UNIT_PRICE
         // We cannot multiply clear by encrypted easily here for locking; quantity is encrypted.
@@ -167,12 +201,7 @@ contract SecretInvest is SepoliaConfig {
         require(clearDirection == DIR_LONG || clearDirection == DIR_SHORT, "dir");
         require(clearQuantity > 0, "qty");
 
-        // Compute stake based on provided clear quantity; check user balance has enough to burn cost if not already locked
-        uint256 stake = uint256(clearQuantity) * UNIT_PRICE_WEI;
-        require(balances[msg.sender] >= stake, "Insufficient stake balance");
-
-        // Burn stake upfront
-        balances[msg.sender] -= stake;
+        // Encrypted stake was deducted at openPosition
 
         // Pseudo-random outcome using block data (not for production)
         bool up = uint256(keccak256(abi.encodePacked(block.timestamp, block.prevrandao, msg.sender))) % 2 == 0;
@@ -181,12 +210,21 @@ contract SecretInvest is SepoliaConfig {
         bool shortWins = (!up) && (clearDirection == DIR_SHORT);
         bool win = longWins || shortWins;
 
-        uint256 payout = win ? stake * 2 : 0; // win: get back stake + profit equal to stake; lose: lose stake
-        if (payout > 0) {
-            balances[msg.sender] += payout;
+        uint256 payoutClear = win ? (uint256(clearQuantity) * UNIT_PRICE_WEI * 2) : 0;
+        if (win) {
+            require(payoutClear <= type(uint64).max, "too big");
+            euint64 encPayout = FHE.asEuint64(uint64(payoutClear));
+            euint64 cur2 = _balances[msg.sender];
+            if (!FHE.isInitialized(cur2)) {
+                cur2 = FHE.asEuint64(0);
+            }
+            euint64 upd2 = FHE.add(cur2, encPayout);
+            _balances[msg.sender] = upd2;
+            FHE.allowThis(upd2);
+            FHE.allow(upd2, msg.sender);
         }
 
-        emit PositionClosed(msg.sender, p.token, win, payout);
+        emit PositionClosed(msg.sender, p.token, win, payoutClear);
 
         // Clear position
         delete positions[msg.sender];
