@@ -67,12 +67,18 @@ task("secret:open", "Open encrypted position")
     const signer = await eths.getSigner(deployer);
     const d = await deployments.get("SecretInvest");
     const c = await eths.getContractAt("SecretInvest", d.address, signer);
+    const up: bigint = await c.UNIT_PRICE_WEI();
+    const stake = up * BigInt(quantity);
+    if (stake > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error("stake too large to encode as 64-bit from task");
+    }
     const enc = await (hre as any).fhevm
       .createEncryptedInput(d.address, signer.address)
       .add32(Number(direction))
       .add32(Number(quantity))
+      .add64(Number(stake))
       .encrypt();
-    const tx = await c.openPosition(token, enc.handles[0], enc.handles[1], enc.inputProof);
+    const tx = await c.openPosition(token, enc.handles[0], enc.handles[1], enc.handles[2], enc.inputProof);
     console.log("tx:", tx.hash);
     await tx.wait();
     console.log("opened");
