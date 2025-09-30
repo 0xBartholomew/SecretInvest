@@ -8,9 +8,12 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const deployedSecretInvest = await deploy("SecretInvest", {
     from: deployer,
     log: true,
+    // ensure we don't skip if there was a previous artifact
+    skipIfAlreadyDeployed: false,
   });
 
-  console.log(`SecretInvest contract: `, deployedSecretInvest.address);
+  console.log(`Deployer: ${deployer}`);
+  console.log(`SecretInvest contract: ${deployedSecretInvest.address}`);
 };
 export default func;
 func.id = "deploy_secretInvest"; // id required to prevent reexecution
