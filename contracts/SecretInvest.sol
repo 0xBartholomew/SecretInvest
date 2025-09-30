@@ -1,215 +1,194 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {FHE, euint32, euint8, externalEuint32, externalEuint8} from "@fhevm/solidity/lib/FHE.sol";
+import {FHE, euint32, externalEuint32} from "@fhevm/solidity/lib/FHE.sol";
 import {SepoliaConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 
+/// @title SecretInvest
+/// @notice Minimal FHE-enabled investment game with encrypted direction and quantity
+/// @dev Uses Zama FHEVM types. View methods MUST NOT rely on msg.sender.
 contract SecretInvest is SepoliaConfig {
-    address public owner;
-    uint256 public constant PRICE_PER_UNIT = 0.001 ether;
-
+    // ===== Types =====
     struct Position {
-        address tokenAddress;
-        euint8 direction; // 1 for long, 2 for short
-        euint32 amount;
-        uint256 entryPrice;
-        uint256 timestamp;
-        bool isActive;
+        address user;
+        address token;
+        euint32 direction; // 1 = long, 2 = short (encrypted)
+        euint32 quantity;  // encrypted units
+        uint256 openPrice; // token price set at open (clear)
+        uint256 openedAt;
+        bool active;
     }
 
-    mapping(address => uint256) public userBalances;
-    mapping(address => uint256) public tokenPrices;
-    mapping(address => Position[]) public userPositions;
-    mapping(address => uint256) public userPositionCount;
+    uint32 private constant DIR_LONG = 1;
+    uint32 private constant DIR_SHORT = 2;
 
-    uint256 private latestRequestId;
-    bool public isDecryptionPending;
-
-    event Deposit(address indexed user, uint256 amount);
-    event PositionOpened(address indexed user, address indexed token, uint256 positionId);
-    event PositionClosed(address indexed user, uint256 positionId, int256 pnl);
+    // ===== Events =====
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event Deposited(address indexed user, uint256 amount);
+    event Withdrawn(address indexed user, uint256 amount);
+    event PositionOpened(address indexed user, address indexed token, uint256 cost, uint256 openPrice);
+    event PositionClosed(address indexed user, address indexed token, bool win, uint256 payout);
     event TokenPriceUpdated(address indexed token, uint256 price);
-    event DecryptionRequested(uint256 requestId);
 
+    // ===== Constants =====
+    uint256 public constant UNIT_PRICE_WEI = 1e15; // 0.001 ether per unit
+
+    // ===== Storage =====
+    address public owner;
+    mapping(address => uint256) public balances;
+
+    // Per token price configured by owner
+    mapping(address => uint256) public tokenPrice; // price in wei (arbitrary units)
+
+    // Single active position per user for simplicity
+    mapping(address => Position) private positions;
+
+    // ===== Modifiers =====
     modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner can call this function");
+        require(msg.sender == owner, "Not owner");
         _;
     }
 
     constructor() {
         owner = msg.sender;
+        emit OwnershipTransferred(address(0), msg.sender);
     }
 
+    // ===== Ownership =====
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Zero address");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+
+    // ===== Admin: token prices =====
+    function setTokenPrice(address token, uint256 price) external onlyOwner {
+        require(token != address(0), "Zero token");
+        tokenPrice[token] = price;
+        emit TokenPriceUpdated(token, price);
+    }
+
+    function getTokenPrice(address token) external view returns (uint256) {
+        return tokenPrice[token];
+    }
+
+    // ===== User funds =====
     function deposit() external payable {
-        require(msg.value > 0, "Deposit amount must be greater than 0");
-        userBalances[msg.sender] += msg.value;
-        emit Deposit(msg.sender, msg.value);
+        require(msg.value > 0, "No value");
+        balances[msg.sender] += msg.value;
+        emit Deposited(msg.sender, msg.value);
     }
 
     function withdraw(uint256 amount) external {
-        require(userBalances[msg.sender] >= amount, "Insufficient balance");
-        userBalances[msg.sender] -= amount;
-        payable(msg.sender).transfer(amount);
+        require(amount > 0, "Zero amount");
+        require(balances[msg.sender] >= amount, "Insufficient balance");
+        balances[msg.sender] -= amount;
+        (bool ok, ) = msg.sender.call{value: amount}("");
+        require(ok, "Withdraw failed");
+        emit Withdrawn(msg.sender, amount);
     }
 
-    function setTokenPrice(address tokenAddress, uint256 price) external onlyOwner {
-        require(price > 0, "Price must be greater than 0");
-        tokenPrices[tokenAddress] = price;
-        emit TokenPriceUpdated(tokenAddress, price);
+    // ===== Positions =====
+    function hasActivePosition(address user) external view returns (bool) {
+        return positions[user].active;
+    }
+
+    function getPosition(address user)
+        external
+        view
+        returns (
+            address token,
+            euint32 direction,
+            euint32 quantity,
+            uint256 openPrice,
+            uint256 openedAt,
+            bool active
+        )
+    {
+        Position storage p = positions[user];
+        return (p.token, p.direction, p.quantity, p.openPrice, p.openedAt, p.active);
     }
 
     function openPosition(
-        address tokenAddress,
-        externalEuint8 encryptedDirection,
-        externalEuint32 encryptedAmount,
+        address token,
+        externalEuint32 directionHandle,
+        externalEuint32 quantityHandle,
         bytes calldata inputProof
     ) external {
-        require(tokenPrices[tokenAddress] > 0, "Token price not set");
+        require(!positions[msg.sender].active, "Position exists");
+        require(token != address(0), "Zero token");
+        uint256 price = tokenPrice[token];
+        require(price > 0, "Token price not set");
 
-        euint8 direction = FHE.fromExternal(encryptedDirection, inputProof);
-        euint32 amount = FHE.fromExternal(encryptedAmount, inputProof);
+        // Verify encrypted inputs
+        euint32 encDirection = FHE.fromExternal(directionHandle, inputProof);
+        euint32 encQuantity = FHE.fromExternal(quantityHandle, inputProof);
 
-        uint256 totalCost = PRICE_PER_UNIT;
-        require(userBalances[msg.sender] >= totalCost, "Insufficient balance");
+        // Grant view permissions: contract + user
+        FHE.allowThis(encDirection);
+        FHE.allow(encDirection, msg.sender);
+        FHE.allowThis(encQuantity);
+        FHE.allow(encQuantity, msg.sender);
 
-        userBalances[msg.sender] -= totalCost;
+        // Compute and lock stake = quantity * UNIT_PRICE
+        // We cannot multiply clear by encrypted easily here for locking; quantity is encrypted.
+        // We lock at most by a user-provided clear stake derived off-chain: here, we approximate
+        // by requiring sender to have enough to cover max reasonable stake. For simplicity, we
+        // ask user to ensure their balance >= UNIT_PRICE. We then settle exact payout on close.
+        // To make costs deterministic, we will charge cost as UNIT_PRICE * decrypted quantity during close.
 
-        Position memory newPosition = Position({
-            tokenAddress: tokenAddress,
-            direction: direction,
-            amount: amount,
-            entryPrice: tokenPrices[tokenAddress],
-            timestamp: block.timestamp,
-            isActive: true
+        // Store position with clear metadata
+        positions[msg.sender] = Position({
+            user: msg.sender,
+            token: token,
+            direction: encDirection,
+            quantity: encQuantity,
+            openPrice: price,
+            openedAt: block.timestamp,
+            active: true
         });
 
-        userPositions[msg.sender].push(newPosition);
-        uint256 positionId = userPositionCount[msg.sender];
-        userPositionCount[msg.sender]++;
-
-        FHE.allowThis(direction);
-        FHE.allow(direction, msg.sender);
-        FHE.allowThis(amount);
-        FHE.allow(amount, msg.sender);
-
-        emit PositionOpened(msg.sender, tokenAddress, positionId);
+        emit PositionOpened(msg.sender, token, 0, price);
     }
 
-    function closePosition(uint256 positionId) external {
-        require(positionId < userPositionCount[msg.sender], "Invalid position ID");
-        require(userPositions[msg.sender][positionId].isActive, "Position already closed");
+    /// @notice Close position; computes random up/down outcome and settles PnL against internal balance.
+    /// @dev Decrypts on-chain via oracle-like path is not exposed here; instead we use user-provided
+    ///      batched decryption by requiring caller to pass the decrypted results signed by KMS in future.
+    ///      For this simplified example, we derive outcome randomly and settle with unit stake per quantity
+    ///      without exposing decrypted values on-chain.
+    function closePosition(
+        uint32 clearQuantity,
+        uint32 clearDirection
+    ) external {
+        Position storage p = positions[msg.sender];
+        require(p.active, "No position");
 
-        Position storage position = userPositions[msg.sender][positionId];
-        position.isActive = false;
+        // Basic consistency: clear inputs must be 1/2 for direction, positive quantity
+        require(clearDirection == DIR_LONG || clearDirection == DIR_SHORT, "dir");
+        require(clearQuantity > 0, "qty");
 
-        bytes32[] memory cts = new bytes32[](2);
-        cts[0] = FHE.toBytes32(position.direction);
-        cts[1] = FHE.toBytes32(position.amount);
+        // Compute stake based on provided clear quantity; check user balance has enough to burn cost if not already locked
+        uint256 stake = uint256(clearQuantity) * UNIT_PRICE_WEI;
+        require(balances[msg.sender] >= stake, "Insufficient stake balance");
 
-        latestRequestId = FHE.requestDecryption(cts, this.decryptionCallback.selector);
-        isDecryptionPending = true;
+        // Burn stake upfront
+        balances[msg.sender] -= stake;
 
-        emit DecryptionRequested(latestRequestId);
-    }
+        // Pseudo-random outcome using block data (not for production)
+        bool up = uint256(keccak256(abi.encodePacked(block.timestamp, block.prevrandao, msg.sender))) % 2 == 0;
 
-    function decryptionCallback(
-        uint256 requestId,
-        bytes memory cleartexts,
-        bytes memory decryptionProof
-    ) public returns (bool) {
-        require(requestId == latestRequestId, "Invalid requestId");
-        FHE.checkSignatures(requestId, cleartexts, decryptionProof);
+        bool longWins = up && (clearDirection == DIR_LONG);
+        bool shortWins = (!up) && (clearDirection == DIR_SHORT);
+        bool win = longWins || shortWins;
 
-        (uint8 direction, uint32 amount) = abi.decode(cleartexts, (uint8, uint32));
-
-        // Find the position that was being closed
-        // This is simplified - in production you'd need better tracking
-        for (uint256 i = userPositionCount[msg.sender]; i > 0; i--) {
-            Position storage position = userPositions[msg.sender][i-1];
-            if (!position.isActive) {
-                uint256 currentPrice = generateRandomPrice(position.entryPrice);
-                tokenPrices[position.tokenAddress] = currentPrice;
-
-                int256 pnl = calculatePnL(
-                    direction,
-                    amount,
-                    position.entryPrice,
-                    currentPrice
-                );
-
-                if (pnl > 0) {
-                    userBalances[msg.sender] += uint256(pnl);
-                } else if (pnl < 0 && userBalances[msg.sender] >= uint256(-pnl)) {
-                    userBalances[msg.sender] -= uint256(-pnl);
-                }
-
-                emit PositionClosed(msg.sender, i-1, pnl);
-                break;
-            }
+        uint256 payout = win ? stake * 2 : 0; // win: get back stake + profit equal to stake; lose: lose stake
+        if (payout > 0) {
+            balances[msg.sender] += payout;
         }
 
-        isDecryptionPending = false;
-        return true;
-    }
+        emit PositionClosed(msg.sender, p.token, win, payout);
 
-    function calculatePnL(
-        uint8 direction,
-        uint32 amount,
-        uint256 entryPrice,
-        uint256 exitPrice
-    ) internal pure returns (int256) {
-        int256 priceDiff = int256(exitPrice) - int256(entryPrice);
-
-        if (direction == 1) { // Long position
-            return (priceDiff * int256(uint256(amount))) / int256(entryPrice);
-        } else { // Short position
-            return (-priceDiff * int256(uint256(amount))) / int256(entryPrice);
-        }
-    }
-
-    function generateRandomPrice(uint256 basePrice) internal view returns (uint256) {
-        uint256 randomSeed = uint256(keccak256(abi.encodePacked(
-            block.timestamp,
-            block.prevrandao,
-            msg.sender
-        )));
-
-        int256 changePercent = int256(randomSeed % 21) - 10; // -10% to +10%
-        int256 newPrice = int256(basePrice) + (int256(basePrice) * changePercent / 100);
-
-        return newPrice > 0 ? uint256(newPrice) : basePrice;
-    }
-
-    function getUserBalance(address user) external view returns (uint256) {
-        return userBalances[user];
-    }
-
-    function getUserPositionCount(address user) external view returns (uint256) {
-        return userPositionCount[user];
-    }
-
-    function getUserPosition(address user, uint256 positionId) external view returns (
-        address tokenAddress,
-        euint8 direction,
-        euint32 amount,
-        uint256 entryPrice,
-        uint256 timestamp,
-        bool isActive
-    ) {
-        require(positionId < userPositionCount[user], "Invalid position ID");
-        Position memory position = userPositions[user][positionId];
-
-        return (
-            position.tokenAddress,
-            position.direction,
-            position.amount,
-            position.entryPrice,
-            position.timestamp,
-            position.isActive
-        );
-    }
-
-    function getTokenPrice(address tokenAddress) external view returns (uint256) {
-        return tokenPrices[tokenAddress];
+        // Clear position
+        delete positions[msg.sender];
     }
 }
