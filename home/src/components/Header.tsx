@@ -8,7 +8,7 @@ export function Header() {
         <div className="header-content">
           <div className="header-left">
             <h1 className="header-title">
-              SecretInvest
+              SecretPerpDex
             </h1>
             
           </div>
