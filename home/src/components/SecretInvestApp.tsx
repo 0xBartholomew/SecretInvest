@@ -160,8 +160,9 @@ export function SecretInvestApp() {
       const start = Math.floor(Date.now() / 1000);
       const eip712 = instance.createEIP712(keypair.publicKey, [CONTRACT_ADDRESS], start, 1);
       const signer = await signerPromise; if (!signer) throw new Error('No signer');
+      const filteredTypes = Object.fromEntries(Object.entries(eip712.types).filter(([k]) => k !== 'EIP712Domain')) as any;
       // @ts-ignore ethers v6 signTypedData
-      const signature: string = await signer.signTypedData(eip712.domain, eip712.types, eip712.message);
+      const signature: string = await signer.signTypedData(eip712.domain, filteredTypes, eip712.message);
       const res = await instance.userDecrypt(
         pairs as any,
         keypair.privateKey,
@@ -292,8 +293,9 @@ export function SecretInvestApp() {
       const start = Math.floor(Date.now() / 1000);
       const eip712 = instance.createEIP712(keypair.publicKey, [CONTRACT_ADDRESS], start, 1);
       const signer = await signerPromise; if (!signer) throw new Error('No signer');
+      const filteredTypes = Object.fromEntries(Object.entries(eip712.types).filter(([k]) => k !== 'EIP712Domain')) as any;
       // @ts-ignore ethers v6 signTypedData
-      const signature: string = await signer.signTypedData(eip712.domain, eip712.types, eip712.message);
+      const signature: string = await signer.signTypedData(eip712.domain, filteredTypes, eip712.message);
 
       const result = await instance.userDecrypt(
         handleContractPairs as any,
