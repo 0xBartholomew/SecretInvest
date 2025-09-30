@@ -155,13 +155,14 @@ export function SecretInvestApp() {
             <h3>Balance</h3>
             <p>Platform balance: {formatEther(balance)} ETH</p>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => handleDeposit('0.01')} disabled={!!busy}>Deposit 0.01 ETH</button>
+              <button onClick={() => handleDeposit('0.005')} disabled={!!busy}>Deposit 0.005 ETH</button>
               <button onClick={() => handleWithdraw('0.005')} disabled={!!busy}>Withdraw 0.005 ETH</button>
             </div>
           </section>
 
           <section style={{ background: '#fff', padding: 16, borderRadius: 8, marginBottom: 16, border: '1px solid #eee' }}>
             <h3>Open Position</h3>
+            <div>Your position direction and quantity is encrypted.</div>
             <div style={{ display: 'grid', gap: 8 }}>
               <label>
                 Token Address
@@ -208,8 +209,8 @@ export function SecretInvestApp() {
                 <div>Token: {position.token}</div>
                 <div>Open price: {position.openPrice.toString()}</div>
                 <div>Opened at: {new Date(Number(position.openedAt) * 1000).toLocaleString()}</div>
-                <div>Encrypted direction: {position.direction}</div>
-                <div>Encrypted quantity: {position.quantity}</div>
+                <div>Encrypted direction: ***</div>
+                <div>Encrypted quantity: ***</div>
                 <button onClick={handleClose} disabled={!!busy}>Close Position</button>
               </div>
             )}

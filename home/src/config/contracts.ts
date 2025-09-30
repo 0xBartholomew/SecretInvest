@@ -1,5 +1,5 @@
 // SecretInvest contract on Sepolia (replace after deploy)
-export const CONTRACT_ADDRESS = '0x7B0f7d142Fbf2F3245af337D6836F47AfBa77a4B';
+export const CONTRACT_ADDRESS = '0xd26123db74AE2bbD9800b7AF2818203d8016BDd0';
 
 // ABI for SecretInvest
 export const CONTRACT_ABI = [
